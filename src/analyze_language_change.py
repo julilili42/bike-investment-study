@@ -1,7 +1,7 @@
 from datasets import load_dataset
 from pydantic import BaseModel, TypeAdapter
 import pandas as pd
-from itertools import islice
+from itertools import islice, chain
 from sklearn.feature_extraction.text import CountVectorizer
 from datetime import date
 from typing import Iterator
@@ -26,10 +26,11 @@ def import_corpus(batch_size: int, url: str, num_batches: int | None = None, spl
 
   batch_counter = 0
 
+  if not streaming: 
+    print(num_batches * batch_size if num_batches else len(ds), "articles to be loaded for dataset", ds.info.dataset_name)
+
   # streaming -> iterator, in-memory -> dataset
   ds = ds if streaming else iter(ds)
-
-  print(num_batches * batch_size if num_batches else 21900, "articles to be loaded")
 
   # continuously iterating data by given batch_size saves ram, enables limited output by num_batches parameter
   while True:
@@ -47,11 +48,26 @@ def import_corpus(batch_size: int, url: str, num_batches: int | None = None, spl
 
 
 
+def linear_prediction(col: pd.Series, year_of_prediction: int=2024) -> float:
+    y = col.dropna()
+    x = y.index.values.astype(float)
+    
+    # linear fit 
+    m, b = np.polyfit(x, y.values, deg=1)
+
+    pred = m * year_of_prediction + b
+    
+    return float(np.clip(pred, 0.0, 1.0))
+
+
 
 def main():
   corpus_18_23 = import_corpus(batch_size=100, streaming=False, url="bjoernp/tagesschau-2018-2023")
-  
-  rows = [(a.date.year, a.article) for a in corpus_18_23]
+  corpus_24 = import_corpus(batch_size=100, streaming=False, url="bjoernp/tagesschau-010124-020524")
+
+  corpus = chain(corpus_18_23, corpus_24)
+
+  rows = [(a.date.year, a.article) for a in corpus]
   year, articles = zip(*rows)
 
   # generate word matrix 
@@ -82,25 +98,27 @@ def main():
   # occurence_freq per year
   occurence_freq = pd.DataFrame(rows, index=unique_years, columns=vocab)
 
-  # frequency gap 
-  y0, yN = occurence_freq.index[0], occurence_freq.index[-1]
-  freq_gap = occurence_freq.loc[yN] - occurence_freq.loc[y0]
+  
+  # goal: try to find words which disproportionaly increased in use 
+  # dataframe containing frequencies before introduction of llm's
+  train = occurence_freq.loc[2018:2022]
+  
+  # linear interpolation, frequency value of 2024
+  q = train.apply(linear_prediction, axis=0)
 
-  # top 20 words with largest increase of frequency from y0 to yN
-  sorted_freq_gap = freq_gap.sort_values(ascending=True).head(20)
+  # empirical frequency
+  p = occurence_freq.loc[2024]
+
+  # Metric 1: frequency gap delta = p - q
+  delta = p - q
+
+  # Metric 2: frequency ratio r = p/q
+  r = p / q.replace(0, 1e-8)
+  sorted_freq_gap = delta.sort_values(ascending=False).head(100)
+  sorted_freq_ratio = r.sort_values(ascending=False).head(100)
 
   print(sorted_freq_gap)
-
-  df_year = pd.DataFrame(
-    list(year_distribution.items()), columns=["year", "count"]
-  ).sort_values("year")
-
-  sns.barplot(data=df_year, x="year", y="count")
-  plt.xticks(rotation=45, ha="right")
-  plt.title("Artikel pro Jahr")
-  plt.tight_layout()
-  plt.show()
-
+  print(sorted_freq_ratio)
 
   
 if __name__ == "__main__":
