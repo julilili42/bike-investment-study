@@ -234,3 +234,6 @@ Icon
 Network Trash Folder
 Temporary Items
 .apdisk
+
+# never upload the datasets
+data/
