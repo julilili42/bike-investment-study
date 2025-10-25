@@ -1,6 +1,0 @@
-datasets
-scikit-learn
-pydantic
-seaborn
-matplotlib
-bs4

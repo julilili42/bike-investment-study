@@ -3,12 +3,19 @@ name = "tagesschau-language-change"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.10"
 dependencies = [
     "nltk>=3.9.2",
-    "numpy>=2.3.4",
+    "numpy>=2.2.6",
     "pandas>=2.3.3",
     "scikit-learn>=1.7.2",
     "spacy>=3.8.7",
     "tabulate>=0.9.0",
+    "datasets>=2.20,<3",
+    "pydantic",
+    "de-core-news-lg @ https://github.com/explosion/spacy-models/releases/download/de_core_news_lg-3.8.0/de_core_news_lg-3.8.0-py3-none-any.whl",
+    "matplotlib",
+    "beautifulsoup4",
+    "ipywidgets",
+    "jupyterlab"
 ]
