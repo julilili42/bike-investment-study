@@ -3,24 +3,30 @@ from pydantic import BaseModel, TypeAdapter
 import pandas as pd
 from itertools import islice
 from datetime import date
-from typing import Iterator
+from typing import Iterator, List, Any
 import numpy as np 
 from typing import Sequence
 from scipy import sparse
 
 
-class Article(BaseModel):
-  date: date
-  headline: str
+class BaseArticle(BaseModel):
+    date: date
+    headline: str
+    article: str
+
+class Article(BaseArticle):
   short_headline: str
   short_text: str
-  article: str
   link: str
 
-def import_corpus(batch_size: int, url: str, num_batches: int | None = None, split: str ="train", streaming: bool =True) -> Iterator[Article]:
+class Mail(BaseArticle):
+  pass
+
+def import_corpus(batch_size: int, url: str, adapter: TypeAdapter | None = None, num_batches: int | None = None, split: str ="train", streaming: bool = True) -> Iterator[Article]:
   ds = load_dataset(url, split=split, streaming=streaming)
 
-  adapter = TypeAdapter(list[Article])
+  if not adapter: 
+    adapter = TypeAdapter(list[Article])
 
   batch_counter = 0
 
