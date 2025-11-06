@@ -1,5 +1,5 @@
 from datasets import load_dataset
-from pydantic import BaseModel, TypeAdapter
+from pydantic import BaseModel, TypeAdapter, field_validator
 import pandas as pd
 from itertools import islice
 from datetime import date
@@ -12,22 +12,30 @@ import matplotlib.pyplot as plt
 
 class BaseArticle(BaseModel):
     date: date
-    headline: str
-    article: str
+    headline: str | None = ""
+    article: str | None = ""
+    link: str | None = ""
+
+    @field_validator("headline", "article", "link", mode="before")
+    @classmethod
+    def none_to_empty(cls, v):
+        return v or ""
 
 class Article(BaseArticle):
   short_headline: str
   short_text: str
-  link: str
 
 class Mail(BaseArticle):
   pass
 
-def import_corpus(batch_size: int, url: str, adapter: TypeAdapter | None = None, num_batches: int | None = None, split: str ="train", streaming: bool = True) -> Iterator[Article]:
+class Paper(BaseArticle):
+  pass
+
+def import_corpus(batch_size: int, url: str, adapter: TypeAdapter | None = None, num_batches: int | None = None, split: str ="train", streaming: bool = True) -> Iterator[Paper]:
   ds = load_dataset(url, split=split, streaming=streaming)
 
   if not adapter: 
-    adapter = TypeAdapter(list[Article])
+    adapter = TypeAdapter(list[Paper])
 
   batch_counter = 0
 
@@ -103,8 +111,6 @@ def linear_prediction(col, target_year=2024, eps=1e-6):
     phat = 1 / (1 + np.exp(-zhat))
     return float(phat)
 
-
-
 # plot occurency frequency to years
 def plot_word_timeseries(
     word: str,
@@ -131,15 +137,20 @@ def plot_word_timeseries(
     years_trend = np.arange(y0, target_year + 1)
     trend_vals = m * years_trend + b
 
-    _, (ax_plot, ax_text) = plt.subplots(1, 2, figsize=(6, 3), dpi=160, gridspec_kw={'width_ratios': [2.3, 1]})
+    _, (ax_plot, ax_text) = plt.subplots(
+        1, 2, figsize=(6, 3), dpi=160, gridspec_kw={'width_ratios': [2.3, 1]}
+    )
     ax = ax_plot
 
-    ax.plot(years_all, series.values, marker='o')
+    ax.plot(years_all, series.values, marker='o', label="observed")
+    ax.plot(years_trend, trend_vals, linestyle='--', color='orange', label="trend")
 
-    ax.plot(years_trend, trend_vals, linestyle='--')
+    release_year = 2022 + 11 / 12  
+    ax.axvline(release_year, color="red", linestyle="--", linewidth=1.5, label="ChatGPT release")
+
+    ax.set_xticklabels([int(t) for t in ax.get_xticks()])
 
     p = series.get(target_year, np.nan)
-
     y_min = min(series.min(), np.nanmin(trend_vals))
     y_max = max(series.max(), np.nanmax(trend_vals))
     y_margin = 0.05 * (y_max - y_min if y_max > y_min else 1.0)
@@ -151,26 +162,21 @@ def plot_word_timeseries(
     ax.legend()
 
     ax_text.axis("off")
-
     text_lines = []
-
     if occurrences_abs is not None and word in occurrences_abs.columns:
-      abs_counts = occurrences_abs[word].dropna()   
-      freq_series = occurence_freq[word].dropna()   
-
-      text_lines.append("Occurrences per Year:\n")
-      total_occ = 0
-
-      years = abs_counts.index.intersection(freq_series.index)
-      for year in years:
-          abs_value = int(abs_counts.loc[year])
-          freq_value = float(freq_series.loc[year])
-          total_occ += abs_value
-          text_lines.append(f"{year}: {abs_value:>6}   {freq_value:>8.3%}")
-
-      text_lines.append("")
-      text_lines.append(f"Total: {int(total_occ):>6}")
-      text_lines.append("")
+        abs_counts = occurrences_abs[word].dropna()
+        freq_series = occurence_freq[word].dropna()
+        text_lines.append("Occurrences per Year:\n")
+        total_occ = 0
+        years = abs_counts.index.intersection(freq_series.index)
+        for year in years:
+            abs_value = int(abs_counts.loc[year])
+            freq_value = float(freq_series.loc[year])
+            total_occ += abs_value
+            text_lines.append(f"{year}: {abs_value:>6}   {freq_value:>8.3%}")
+        text_lines.append("")
+        text_lines.append(f"Total: {int(total_occ):>6}")
+        text_lines.append("")
 
     ax_text.text(
         0, 1, "\n".join(text_lines),
@@ -181,6 +187,8 @@ def plot_word_timeseries(
         plt.tight_layout()
         plt.show()
 
-    return {"p": float(p) if np.isfinite(p) else None,
-            "q": float(q),
-            "delta": float((p - q)) if np.isfinite(p) else None}
+    return {
+        "p": float(p) if np.isfinite(p) else None,
+        "q": float(q),
+        "delta": float((p - q)) if np.isfinite(p) else None,
+    }
