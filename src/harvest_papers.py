@@ -2,12 +2,12 @@
 import re, csv, argparse, pathlib, time, unicodedata, random
 import requests
 from tqdm import tqdm
+from time import sleep
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 OPENALEX = "https://api.openalex.org"
 HEADERS = {"User-Agent": "tue-llm-shift/1.0 (mailto:julian.abc@student.uni-tuebingen.de)"}
 
-# ---------- HTTP ----------
 @retry(reraise=True, stop=stop_after_attempt(5),
        wait=wait_exponential(multiplier=1, min=1, max=30),
        retry=retry_if_exception_type(requests.RequestException))
@@ -23,7 +23,6 @@ def get_json(url, params=None):
     r.raise_for_status()
     return r.json()
 
-# ---------- OpenAlex helpers ----------
 def resolve_institution_id(name: str):
     j = get_json(f"{OPENALEX}/institutions", params={"search": name, "per-page": 25})
     cands = j.get("results", [])
@@ -54,7 +53,7 @@ def resolve_concepts(concept_names):
 
 def build_filters(inst_id, y0, y1, concept_ids=None, doc_types=None, lang=None):
     flt = []
-    if inst_id:  # optional institution
+    if inst_id: 
         flt.append(f"authorships.institutions.id:{inst_id}")
     flt.append(f"publication_year:{y0}-{y1}")
     if concept_ids: flt.append("concepts.id:" + "|".join(concept_ids))
@@ -74,22 +73,51 @@ SELECT_FIELDS = ",".join([
     "best_oa_location","primary_location","locations","open_access"
 ])
 
-def _iter_year(inst_id, year, concept_ids=None, doc_types=None, lang=None):
-    params = {
-        "filter": build_filters(inst_id, year, year, concept_ids, doc_types, lang),
-        "per-page": 200,
-        "sort": "publication_date:asc",
-        "select": SELECT_FIELDS,
-        "cursor": "*"
-    }
-    while True:
-        j = get_json(f"{OPENALEX}/works", params=params)
-        results = j.get("results", [])
-        if not results: break
-        for w in results: yield w
-        nxt = j.get("meta", {}).get("next_cursor")
-        if not nxt: break
-        params["cursor"] = nxt
+def chunk_list(lst, k):
+    if not lst: 
+        yield []
+    else:
+        for i in range(0, len(lst), k):
+            yield lst[i:i+k]
+
+
+def _iter_year(inst_id, year, concept_ids=None, doc_types=None, lang=None,
+               concepts_per_query=12, per_page=150, sleep_ms=100):
+    """
+    Holt ein Jahr in Chunks von concept_ids, blättert per Cursor, drosselt Requests
+    und erholt sich von sporadischen 5xx-Fehlern.
+    """
+    concept_chunks = list(chunk_list(concept_ids or [], concepts_per_query))
+    if not concept_chunks:
+        concept_chunks = [[]]
+
+    for ch in concept_chunks:
+        params = {
+            "filter": build_filters(inst_id, year, year, ch, doc_types, lang),
+            "per-page": per_page,
+            "sort": "publication_date:asc",
+            "select": SELECT_FIELDS,
+            "cursor": "*",
+        }
+        while True:
+            try:
+                j = get_json(f"{OPENALEX}/works", params=params)
+            except requests.RequestException as e:
+                wait = random.uniform(2.0, 6.0)
+                print(f"[warn] OpenAlex RequestException ({e}). Warte {wait:.1f}s und versuche erneut...")
+                sleep(wait)
+                continue
+
+            results = j.get("results", []) or []
+            for w in results:
+                yield w
+
+            nxt = (j.get("meta") or {}).get("next_cursor")
+            if not nxt:
+                break
+            params["cursor"] = nxt
+            sleep(sleep_ms / 1000.0)  
+
 
 def iter_works_range(inst_id, y0, y1, concept_ids=None, max_works=100000, doc_types=None, lang=None):
     params = {
@@ -110,7 +138,6 @@ def iter_works_range(inst_id, y0, y1, concept_ids=None, max_works=100000, doc_ty
         if not nxt: return
         params["cursor"] = nxt
 
-# ---------- Abstract & Cleaning ----------
 def reconstruct_abstract(inv):
     if not inv: return ""
     positions = []
@@ -163,9 +190,14 @@ def pick_link(work):
         if loc.get("landing_page_url"): return loc["landing_page_url"]
     return f"https://openalex.org/{work.get('id','').split('/')[-1]}"
 
-# ---------- Eligible iterator & sampling ----------
 def iter_eligible_year(inst_id, year, concept_ids, doc_types, lang, min_len):
+    seen_ids = set()  
     for w in _iter_year(inst_id, year, concept_ids, doc_types, lang):
+        wid = (w.get("id") or "").split("/")[-1]  
+        if wid in seen_ids:
+            continue
+        seen_ids.add(wid)
+
         abstract = reconstruct_abstract(w.get("abstract_inverted_index"))
         abstract = clean_text(abstract)
         if not abstract or len(abstract) < min_len:
@@ -173,7 +205,7 @@ def iter_eligible_year(inst_id, year, concept_ids, doc_types, lang, min_len):
         date = w.get("publication_date") or (f"{w.get('publication_year','NA')}-01-01")
         headline = (w.get("title") or "").strip()
         link = pick_link(w)
-        yield {"date": date, "headline": headline, "article": abstract, "link": link}
+        yield {"id": wid, "date": date, "headline": headline, "article": abstract, "link": link}
 
 def sample_year_reservoir_eligible(inst_id, year, cap, concept_ids, doc_types, lang, min_len):
     res, n = [], 0
@@ -189,7 +221,6 @@ def sample_year_reservoir_eligible(inst_id, year, cap, concept_ids, doc_types, l
                 res[j - 1] = row
     return res, n
 
-# ---------- Main ----------
 def main():
     ap = argparse.ArgumentParser(description="Harvest Tübingen abstracts (cleaned) into a CSV")
     ap.add_argument("--institution", required=False, help="Optional institution name (global search if omitted)")
@@ -205,7 +236,6 @@ def main():
     ap.add_argument("--csv-path", default="./tue_papers_abstracts.csv")
     args = ap.parse_args()
 
-    # institution optional
     inst_id = None
     if args.institution:
         inst_id = resolve_institution_id(args.institution)
@@ -215,11 +245,12 @@ def main():
         concept_names.append("Computer Science")
     concept_ids = resolve_concepts(concept_names) if concept_names else []
 
-    # CSV
     pathlib.Path(args.csv_path).parent.mkdir(parents=True, exist_ok=True)
     fout = open(args.csv_path, "w", encoding="utf-8", newline="")
     writer = csv.writer(fout, quoting=csv.QUOTE_MINIMAL, quotechar='"', escapechar='\\', doublequote=True)
     writer.writerow(["date", "headline", "article", "link"])
+
+    written_ids = set()  
 
     if args.max_per_year > 0:
         yearly_samples = {}
@@ -236,6 +267,9 @@ def main():
         with tqdm(total=total_rows, desc="Writing CSV", unit="row") as pbar:
             for year in range(args.year_start, args.year_end + 1):
                 for r in yearly_samples.get(year, []):
+                    if r.get("id") in written_ids:  # NEW
+                        continue
+                    written_ids.add(r["id"])        # NEW
                     writer.writerow([r["date"], r["headline"], r["article"], r["link"]])
                     pbar.update(1)
                     time.sleep(0.005)
@@ -249,6 +283,11 @@ def main():
                                       concept_ids=concept_ids, max_works=args.max_works,
                                       doc_types=args.doc_type, lang=args.lang):
                 pbar.update(1)
+
+                wid = (w.get("id") or "").split("/")[-1]  
+                if wid in written_ids:                    
+                    continue
+
                 abstract = reconstruct_abstract(w.get("abstract_inverted_index"))
                 abstract = clean_text(abstract)
                 if not abstract or len(abstract) < args.min_text_chars:
@@ -256,7 +295,9 @@ def main():
                 date = w.get("publication_date") or (f"{w.get('publication_year','NA')}-01-01")
                 headline = (w.get("title") or "").strip()
                 link = pick_link(w)
+
                 writer.writerow([date, headline, abstract, link])
+                written_ids.add(wid)  
                 written += 1
                 time.sleep(0.005)
         print(f"Rows written: {written}")
