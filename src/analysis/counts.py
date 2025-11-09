@@ -41,3 +41,9 @@ def occurrences_by_year(
         rows.append(counts)
 
     return pd.DataFrame(rows, index=unique_years, columns=vocab)
+
+
+def occurences_by_word(word, year, articles):
+    mask = [word in t.lower() for t in articles]
+    counts = pd.Series(year)[mask].value_counts().sort_index()
+    return counts

@@ -18,6 +18,6 @@ def proj_from_year_series(s):
     f = s.dropna().values
     if len(f) < 4:
         return f[-1] if len(f) else 0.0
-    # Projektion: 2022 + max(Trend, 0)*2
+    # 2022 + max(Trend, 0)*2
     return f[-3] + max(0.0, f[-3] - f[-4]) * 2
 

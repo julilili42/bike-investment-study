@@ -104,3 +104,67 @@ def plot_word_timeseries(
         "delta": float((p - q)) if np.isfinite(p) else None,
     }
 
+
+
+def plot_word_scatter(
+    df,
+    metric: str = "delta",
+    llm_words: set[str] | None = None,
+    min_p=1e-5,
+    min_q=1e-5,
+    annotate_top_n=5,
+    figsize=(7, 4.5),
+):
+
+    def annotate_top_words(ax, df, word_set, metric, n=15):
+        top = df[df.index.isin(word_set)].sort_values(metric, ascending=False).head(n)
+        for word, row in top.iterrows():
+            ax.text(row["p"], row[metric], " " + word, fontsize=6, va="center", ha="left")
+
+
+    df = df.copy()
+    df = df[(df["p"] > min_p) & (df["q"] > min_q)].dropna(subset=[metric, "p"])
+
+    colors = np.full(len(df), "tab:blue", dtype=object)
+    if llm_words:
+        colors[df.index.isin(llm_words)] = "tab:red"
+
+    sizes = 12 + 200 * np.clip(df["p"].values,0.0,0.02)  
+
+    _, ax = plt.subplots(figsize=figsize, dpi=150)
+    ax.scatter(df["p"], df[metric], s=sizes, c=colors, linewidths=0)
+
+    ax.set_xscale("log")
+    ax.set_ylim(0)
+    ax.axhline(0, color="gray", lw=0.8, ls="--")
+
+    # mean line
+    mean_val = df[metric].mean()
+    ax.axhline(mean_val, color="black", lw=1.0, ls=":", label=f"Mean {metric} = {mean_val:.2e}")
+
+
+    ax.set_xlabel("Frequency p (log scale)")
+    match metric:
+        case "delta":
+            ax.set_ylabel("Frequency gap between 2024 and 2022")
+        case "growth":
+            ax.set_ylabel("Frequency growth between 2024 and 2022")
+        case "ratio":
+            ax.set_ylabel("Frequency ratio between 2024 and 2022")
+        case _:
+            ax.set_ylabel(metric)
+
+    # top_n of llm_words
+    annotate_top_words(ax, df, llm_words, metric, n=annotate_top_n)
+    # all words except top_n of llm_words
+    annotate_top_words(ax, df, set(df.index) - llm_words, metric, n=annotate_top_n)
+
+    handles, labels = [], []
+    if llm_words:
+        handles.append(plt.Line2D([0],[0], marker='o', color='w', markerfacecolor='tab:red', markersize=6))
+        labels.append("LLM lexicon")
+    if handles:
+        ax.legend(handles, labels, frameon=False, loc="upper left")
+
+    plt.tight_layout()
+    plt.show()
